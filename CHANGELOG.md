@@ -1,5 +1,74 @@
 # Changelog
 
+## [0.5.0] - unreleased
+
+### Fixed — pre-existing SC2261 in `scripts/calc.sh`
+- The `ta` family was completely broken: line 107 had
+  `python3 - "$sub" "${len:-$period}" <<PY <<<"$raw"`, which combines a
+  heredoc and a here-string for stdin. Bash only honours the **last**
+  redirection, so Python was reading the JSON klines blob as its source
+  code and crashing immediately. Fixed by passing the JSON via the
+  `KLINES_JSON` env var and keeping stdin reserved for the `<<'PY'`
+  script body.
+- `calc.sh` was previously excluded from the `make lint` / CI shellcheck
+  job because of this issue. It is now part of the active surface.
+
+### Added — Milestone 8: strategy helpers (`calc` / `scan` / `ta`)
+- **`calc size`**: risk-based position sizing using
+  `equity × risk% / |entry − stop|` in `Decimal` precision. Validates
+  `equity > 0`, `risk-pct ∈ (0, 100]`, and `entry ≠ stop` before
+  computing.
+- **`calc liq`**: isolated-margin liquidation estimate using
+  `entry × (1 − 1/lev + mmr)` (LONG) / `entry × (1 + 1/lev − mmr)`
+  (SHORT). `--mmr` (maintenance-margin rate) defaults to `0.004` —
+  conservative; the actual rate is tier-dependent and obtainable via
+  `/fapi/v1/leverageBracket` if you need a tighter estimate. The output
+  carries a `note` field documenting the simplifying assumptions
+  (ignores fees, funding, tier MMR steps).
+- **`calc pnl`**: what-if PnL given entry/exit/qty/side. New optional
+  `--leverage` flag computes `notional / leverage = margin_used` and
+  `pnl / margin × 100 = roi_on_margin`, which is the metric most
+  agents actually want.
+- **`calc basis`** (new): futures-vs-spot basis with annualization. Pass
+  either `--symbol BTCUSDT` for a live `/fapi/v1/premiumIndex` fetch
+  (uses `markPrice` and `indexPrice`) or both `--futures-price` and
+  `--spot-price` for a paper calculation. `--hours` is the funding
+  interval (default 8 for Binance perp), used to project the
+  per-window basis to APR.
+- **`scan funding`**: rewritten to parse the array form of
+  `/fapi/v1/premiumIndex`, sort by `lastFundingRate` numerically, and
+  surface `{count, top_negative, top_positive}` so the agent can see
+  both extremes in one call. Validates `--top` is a positive integer
+  and rejects malformed responses with `BAD_RESPONSE` instead of
+  blowing up inside `jq`.
+- **`ta sma | ema | rsi | atr | bbands`**: hardened the indicator
+  pipeline (see SC2261 fix above), added pre-flight validation
+  (`--symbol` required, `--period >= 2`), and standardised output
+  to `{indicator, symbol, interval, length, candles, last_close, value}`
+  (or `…, bbands: {middle, upper, lower, stddev}` for Bollinger).
+  Unknown indicators (`ta macd …`) now fail with `UNKNOWN_CMD`.
+
+### Tests
+- `tests/test_calc.bats` — 16 hermetic unit tests covering happy
+  paths, every per-subcommand rejection path, schema sanity, and
+  `calc basis --symbol` via the new `mock_public_get_fixture` helper.
+- `tests/test_scan_ta.bats` — 15 hermetic unit tests using two new
+  fixtures (`tests/fixtures/klines_monotonic.json`,
+  `tests/fixtures/premiumIndex.json`). Indicator math is asserted
+  against analytically-known values (monotonic +1 close series →
+  SMA = 32, EMA → 32, RSI = 100, ATR = 1.5, Bollinger middle = 32
+  with stddev = √2). Malformed-response paths cover both `scan
+  funding` and `ta sma`.
+- `tests/helpers.bash` gains `source_common_and_calc` and
+  `mock_public_get_fixture` helpers.
+
+### Documentation
+- `SKILL.md` — new `calc`, `scan funding`, and `ta` sections with
+  formula citations, output shape, and validation rules. Quick-
+  reference table now annotates each helper as `offline` / `public`.
+- `Makefile` and `.github/workflows/ci.yml` — `calc.sh` is now in the
+  shellcheck active surface (`make lint` runs it).
+
 ## [0.4.0] - unreleased
 
 ### Added — Milestone 6: position setters (leverage / margin type / mode)

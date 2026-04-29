@@ -1,0 +1,7 @@
+[
+  {"symbol":"BTCUSDT","markPrice":"60000.00","indexPrice":"59995.00","lastFundingRate":"0.0001","nextFundingTime":1700000000000,"interestRate":"0.0001","time":1699999000000},
+  {"symbol":"ETHUSDT","markPrice":"3000.00", "indexPrice":"3001.00", "lastFundingRate":"0.0005","nextFundingTime":1700000000000,"interestRate":"0.0001","time":1699999000000},
+  {"symbol":"DOGEUSDT","markPrice":"0.10",   "indexPrice":"0.10",    "lastFundingRate":"-0.0030","nextFundingTime":1700000000000,"interestRate":"0.0001","time":1699999000000},
+  {"symbol":"SOLUSDT","markPrice":"100.00",  "indexPrice":"99.95",   "lastFundingRate":"0.0020","nextFundingTime":1700000000000,"interestRate":"0.0001","time":1699999000000},
+  {"symbol":"XRPUSDT","markPrice":"0.50",    "indexPrice":"0.50",    "lastFundingRate":"-0.0001","nextFundingTime":1700000000000,"interestRate":"0.0001","time":1699999000000}
+]
