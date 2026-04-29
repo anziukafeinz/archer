@@ -55,10 +55,12 @@ JSON
   mock_public_get_fixture klines_monotonic.json
   run ta_dispatch sma --symbol BTCUSDT --interval 1h --period 5
   [ "$status" -eq 0 ]
-  [ "$(echo "$output" | jq -r '.data.value')" = "32" ]
+  # Compare numerically to be robust across jq versions: jq 1.6 prints 32.0
+  # as "32" while jq 1.7+ prints it as "32.0".
+  echo "$output" | jq -e '(.data.value | tonumber) == 32' >/dev/null
   [ "$(echo "$output" | jq -r '.data.indicator')" = "sma" ]
-  [ "$(echo "$output" | jq -r '.data.candles')" = "25" ]
-  [ "$(echo "$output" | jq -r '.data.last_close')" = "34" ]
+  echo "$output" | jq -e '(.data.candles | tonumber) == 25' >/dev/null
+  echo "$output" | jq -e '(.data.last_close | tonumber) == 34' >/dev/null
 }
 
 @test "ta ema: monotonic +1 step closes => EMA(5) ~= 32" {
@@ -73,21 +75,21 @@ JSON
   mock_public_get_fixture klines_monotonic.json
   run ta_dispatch rsi --symbol BTCUSDT --interval 1h --period 14
   [ "$status" -eq 0 ]
-  [ "$(echo "$output" | jq -r '.data.value')" = "100" ]
+  echo "$output" | jq -e '(.data.value | tonumber) == 100' >/dev/null
 }
 
 @test "ta atr: range 1, body 1, prev_close=close-1 => TR=1.5 => ATR=1.5" {
   mock_public_get_fixture klines_monotonic.json
   run ta_dispatch atr --symbol BTCUSDT --interval 1h --period 14
   [ "$status" -eq 0 ]
-  [ "$(echo "$output" | jq -r '.data.value')" = "1.5" ]
+  echo "$output" | jq -e '(.data.value | tonumber) == 1.5' >/dev/null
 }
 
 @test "ta bbands: monotonic closes period 5 => middle=32, stddev=sqrt(2)" {
   mock_public_get_fixture klines_monotonic.json
   run ta_dispatch bbands --symbol BTCUSDT --interval 1h --period 5
   [ "$status" -eq 0 ]
-  [ "$(echo "$output" | jq -r '.data.bbands.middle')" = "32" ]
+  echo "$output" | jq -e '(.data.bbands.middle | tonumber) == 32' >/dev/null
   echo "$output" | jq -e '(.data.bbands.stddev | tonumber) > 1.414' >/dev/null
   echo "$output" | jq -e '(.data.bbands.stddev | tonumber) < 1.415' >/dev/null
   echo "$output" | jq -e '(.data.bbands.upper | tonumber) > 34.82' >/dev/null
