@@ -4,8 +4,8 @@
 test:
 	bats tests/
 
-# Static analysis on the M4 + M7 surface. calc.sh has a pre-existing
-# SC2261 issue and is not gated here yet.
+# Static analysis on the active surface (everything except calc.sh, which
+# has a pre-existing SC2261 issue tracked separately).
 lint:
 	shellcheck --severity=error -x -P scripts/ \
 	  scripts/futures-cli scripts/_common.sh scripts/order.sh \

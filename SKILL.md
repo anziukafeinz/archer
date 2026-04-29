@@ -104,35 +104,51 @@ Bybit and OKX. All commands return **JSON** so the agent can parse reliably.
 ```
 futures-cli order place \
   --symbol BTCUSDT \
-  --side BUY \
-  --type LIMIT \
+  --side BUY|SELL \
+  --type LIMIT|MARKET|STOP|STOP_MARKET|TAKE_PROFIT|TAKE_PROFIT_MARKET|TRAILING_STOP_MARKET \
   --quantity 0.01 \
-  --price 60000 \
-  --time-in-force GTC \
-  [--reduce-only] \
-  [--close-position] \
+  [--price 60000]              # required for LIMIT / STOP / TAKE_PROFIT
+  [--time-in-force GTC]         # used for any price-bearing type; default GTC
+  [--stop-price <p>]            # required for STOP* / TAKE_PROFIT*
+  [--callback-rate <pct>]       # required for TRAILING_STOP_MARKET (0.1..5.0)
+  [--activation-price <p>]      # optional for TRAILING_STOP_MARKET
+  [--reduce-only]               # mutually exclusive with --close-position
+  [--close-position]            # only valid on STOP_MARKET / TAKE_PROFIT_MARKET
   [--position-side LONG|SHORT|BOTH] \
   [--working-type MARK_PRICE|CONTRACT_PRICE] \
   [--price-protect] \
   [--client-order-id <idempotency-key>] \
-  [--stop-price <p>] \
-  [--callback-rate <pct>]      # for TRAILING_STOP_MARKET
+  [--max-slippage 0.005]        # 0 disables; FUTURES_MAX_SLIPPAGE override
   [--dry-run]                   # default unless --confirm
   [--mainnet]                   # default testnet
 ```
 
-### Supported `--type`
-`MARKET`, `LIMIT`, `STOP`, `STOP_MARKET`, `TAKE_PROFIT`, `TAKE_PROFIT_MARKET`,
-`TRAILING_STOP_MARKET`, `LIMIT_MAKER`.
+### Per-type cheatsheet
+
+| `--type`               | Required                                  | Sent to Binance                                     |
+|------------------------|-------------------------------------------|------------------------------------------------------|
+| `LIMIT`                | `--price`, `--quantity`                   | `price`, `timeInForce`, `quantity`                   |
+| `MARKET`               | `--quantity`                              | `quantity` (no price / timeInForce)                  |
+| `STOP`                 | `--price`, `--stop-price`, `--quantity`   | `price`, `stopPrice`, `timeInForce`, `quantity`      |
+| `STOP_MARKET`          | `--stop-price` (qty OR `--close-position`)| `stopPrice` + (`quantity` or `closePosition=true`)   |
+| `TAKE_PROFIT`          | `--price`, `--stop-price`, `--quantity`   | same shape as `STOP`                                 |
+| `TAKE_PROFIT_MARKET`   | `--stop-price` (qty OR `--close-position`)| same shape as `STOP_MARKET`                          |
+| `TRAILING_STOP_MARKET` | `--callback-rate` (0.1..5.0), `--quantity`| `callbackRate` + optional `activationPrice`          |
 
 ### Pre-trade validation (always runs, even in dry-run)
 1. Symbol exists and is `TRADING` status.
-2. `quantity` rounded down to `stepSize`; `price` rounded to `tickSize`.
-3. `quantity × price ≥ minNotional`.
-4. Available margin ≥ required initial margin given current leverage.
-5. Estimated liquidation price computed and returned alongside the order.
-6. For `MARKET`: estimated slippage from order book; abort if > `--max-slippage` (default 0.5%).
-7. `clientOrderId` auto-generated as `ai-${epoch}-${rand}` if not provided (idempotency).
+2. Per-type required-arg check (table above) — wrong combos return `BAD_ARGS`.
+3. `quantity` rounded down to `stepSize`; `price` and `stopPrice` rounded to `tickSize`.
+4. `quantity × price ≥ minNotional` (skipped for `MARKET` / `*_MARKET` / `TRAILING_STOP_MARKET` — Binance enforces server-side).
+5. **Slippage gate** (price-bearing types only): the explicit `--price` may not deviate
+   from `markPrice` by more than `--max-slippage` (default `FUTURES_MAX_SLIPPAGE` /
+   `0.005` = 0.5%). Set `--max-slippage 0` to disable. Failures return
+   `SLIPPAGE_EXCEEDED`; this is intended to catch typos like a BUY LIMIT 1.5x mark.
+6. `clientOrderId` auto-generated as `ai-${epoch}-${rand}` if not provided (idempotency).
+7. `--close-position` is rejected on anything other than `STOP_MARKET` /
+   `TAKE_PROFIT_MARKET`, and is mutually exclusive with `--reduce-only`.
+   For `closePosition=true`, `quantity` is ignored by Binance and stripped from
+   the request; the confirmation gate uses notional `0`.
 
 ### Confirmation gate (mainnet only)
 Destructive mainnet calls require **all** of:
@@ -286,6 +302,7 @@ Common error codes (normalized across venues):
 - `CIRCUIT_BREAKER` (drawdown / daily-loss limit hit)
 - `BATCH_SIZE` (`order place-batch` outside 1..5)
 - `INVALID_ORDER` (per-order failure inside a batch; message includes index)
+- `SLIPPAGE_EXCEEDED` (limit price too far from mark; raise `--max-slippage` or move price)
 
 ---
 

@@ -17,7 +17,7 @@ jobs:
         run: bats --tap tests/
 
   shellcheck:
-    name: shellcheck (M4 + M7 surface)
+    name: shellcheck (active surface)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -25,7 +25,7 @@ jobs:
         run: sudo apt-get update -y && sudo apt-get install -y shellcheck
       - name: lint
         # calc.sh has a known pre-existing SC2261 issue tracked separately;
-        # it is excluded until v0.2.x cleans it up. The other layers must
+        # it is excluded until that cleanup lands. The other layers must
         # stay clean. Severity=error gates only real bugs (style warnings
         # in legacy parsing code are filed for follow-up).
         run: make lint

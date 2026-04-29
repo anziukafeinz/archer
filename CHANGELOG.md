@@ -1,5 +1,51 @@
 # Changelog
 
+## [0.3.0] - unreleased
+
+### Added — Milestone 5: full order-type matrix + slippage gate
+- `futures-cli order place` now supports the full Binance USDS-M futures
+  order type set: `LIMIT`, `MARKET`, `STOP`, `STOP_MARKET`, `TAKE_PROFIT`,
+  `TAKE_PROFIT_MARKET`, `TRAILING_STOP_MARKET`. Per-type required-arg
+  validation runs before any signed call (e.g. `STOP` requires both
+  `--price` and `--stop-price`; `TRAILING_STOP_MARKET` requires
+  `--callback-rate` in `0.1..5.0`).
+- New `--activation-price` flag for `TRAILING_STOP_MARKET`.
+- `--max-slippage` (env: `FUTURES_MAX_SLIPPAGE`, default `0.005` = 0.5%)
+  is now enforced for any price-bearing type (`LIMIT` / `STOP` /
+  `TAKE_PROFIT`). The CLI fetches `markPrice` and rejects orders whose
+  explicit price deviates by more than the threshold with a new
+  `SLIPPAGE_EXCEEDED` error. Set `--max-slippage 0` to disable. The
+  flag was previously parsed but unused.
+- `--close-position` is now constrained to `STOP_MARKET` /
+  `TAKE_PROFIT_MARKET` and is mutually exclusive with `--reduce-only`.
+  When used, `quantity` is omitted from the request and the
+  confirmation gate uses notional `0` (Binance ignores qty server-side).
+- `stopPrice` and `activationPrice` are rounded to `tickSize` before
+  the request is built, matching how `price` and `quantity` are handled.
+- `order place --dry-run` output now uses the standard `ok_json`
+  envelope (`{ok, venue, network, command, data, warnings, error}`) and
+  includes `type`, `max_slippage`, and `dry_run:true` inside `data`.
+  Previously the dry-run path emitted a hand-rolled object without
+  `venue` / `network` and with `dry_run` at the wrong nesting level.
+
+### Tests
+- `tests/test_order_types.bats` — 27 hermetic unit tests covering every
+  type's happy path, every per-type rejection path, the slippage-gate
+  matrix (default reject / `--max-slippage` raised / disabled / bypassed
+  for non-price-bearing types), `closePosition` rules,
+  `reduceOnly`/`closePosition` mutual exclusion, and `positionSide`
+  emission.
+- `tests/helpers.bash` already provided `mock_signed_req` and
+  `public_get` mocks, so all 27 cases run offline against the
+  `exchangeInfo.json` fixture.
+
+### Documentation
+- `SKILL.md` — `order place` section rewritten with a per-type
+  cheatsheet table; pre-trade validation list updated to mention the
+  slippage gate, the per-type required-arg check, and `closePosition`
+  semantics. Output schema unchanged.
+- `SKILL.md` — added `SLIPPAGE_EXCEEDED` to the normalised error-code list.
+
 ## [0.2.0] - unreleased
 
 ### Added — Milestone 7: batch order management
