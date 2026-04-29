@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# futures-cli — entrypoint dispatcher for the crypto-futures-trading skill.
+# Usage: futures-cli <group> <command> [flags]
+# Groups: market | account | position | order | calc | scan | ta | risk
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=_common.sh
+. "$SCRIPT_DIR/_common.sh"
+
+usage() {
+  cat <<'EOF'
+futures-cli <group> <command> [flags]
+
+Groups:
+  market    exchange-info | ticker | depth | klines | mark-price |
+            funding-history | open-interest | open-interest-hist |
+            top-long-short-ratio | liquidations
+  account   info | balance | config | commission | income
+  position  list | set-leverage | set-margin-type | set-position-mode |
+            adjust-margin
+  order     place | place-batch | bracket | cancel | cancel-all |
+            cancel-batch | query | open | history | trades
+  calc      size | liq | pnl | basis
+  scan      funding
+  ta        sma | ema | rsi | atr | bbands
+  risk      show | reset
+
+Common flags:
+  --mainnet            Use mainnet (default: testnet)
+  --confirm            Required for destructive mainnet calls
+  --dry-run            Print payload, do not send
+  --json-only          Suppress human hints, JSON only
+EOF
+}
+
+[ $# -lt 1 ] && { usage; exit 1; }
+
+group="$1"; shift
+case "$group" in
+  market)   . "$SCRIPT_DIR/market.sh"   && market_dispatch   "$@" ;;
+  account)  . "$SCRIPT_DIR/account.sh"  && account_dispatch  "$@" ;;
+  position) . "$SCRIPT_DIR/account.sh"  && position_dispatch "$@" ;;
+  order)    . "$SCRIPT_DIR/order.sh"    && order_dispatch    "$@" ;;
+  calc)     . "$SCRIPT_DIR/calc.sh"     && calc_dispatch     "$@" ;;
+  scan)     . "$SCRIPT_DIR/calc.sh"     && scan_dispatch     "$@" ;;
+  ta)       . "$SCRIPT_DIR/calc.sh"     && ta_dispatch       "$@" ;;
+  risk)     . "$SCRIPT_DIR/risk.sh"     && risk_dispatch     "$@" ;;
+  -h|--help|help) usage ;;
+  *) echo "unknown group: $group" >&2; usage; exit 1 ;;
+esac
