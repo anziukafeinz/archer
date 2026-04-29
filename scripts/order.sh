@@ -14,8 +14,8 @@ order_dispatch() {
     history)       _order_history "$@" ;;
     trades)        _order_trades "$@" ;;
     bracket)       _order_bracket "$@" ;;
-    place-batch)   die "NOT_IMPLEMENTED" "place-batch in v0.1.0" "Loop place for now" ;;
-    cancel-batch)  die "NOT_IMPLEMENTED" "cancel-batch in v0.1.0" "Loop cancel for now" ;;
+    place-batch)   _order_place_batch "$@" ;;
+    cancel-batch)  _order_cancel_batch "$@" ;;
     *) die "UNKNOWN_CMD" "order $sub" "futures-cli order --help" ;;
   esac
 }
@@ -180,4 +180,188 @@ _order_bracket() {
 
   jq -nc --argjson e "$entry" --argjson s "$sl_o" --argjson t "$tp_o" \
         '{ok:true,command:"order bracket",data:{entry:$e,stop_loss:$s,take_profit:$t}}'
+}
+
+# Validate one order from a batch JSON object. Echoes a one-line JSON
+# `{order, notional}` on stdout. Aborts via die() on validation failure.
+_batch_normalize_one() { # $1 = idx, $2 = order JSON
+  local idx="$1" o="$2"
+  local sym side type qty price tif coid pside ro cp wt sp cb
+  sym=$(jq -r '.symbol             // empty'                <<<"$o")
+  side=$(jq -r '.side              // empty'                <<<"$o")
+  type=$(jq -r '.type              // empty'                <<<"$o")
+  qty=$(jq -r  '.quantity          // empty'                <<<"$o")
+  price=$(jq -r '.price            // "0"'                  <<<"$o")
+  tif=$(jq -r  '.timeInForce       // "GTC"'                <<<"$o")
+  coid=$(jq -r '.newClientOrderId  // .clientOrderId // ""' <<<"$o")
+  pside=$(jq -r '.positionSide     // "BOTH"'               <<<"$o")
+  ro=$(jq -r   '.reduceOnly        // ""'                   <<<"$o")
+  cp=$(jq -r   '.closePosition     // ""'                   <<<"$o")
+  wt=$(jq -r   '.workingType       // ""'                   <<<"$o")
+  sp=$(jq -r   '.stopPrice         // ""'                   <<<"$o")
+  cb=$(jq -r   '.callbackRate      // ""'                   <<<"$o")
+
+  if [ -z "$sym" ] || [ -z "$side" ] || [ -z "$type" ] || [ -z "$qty" ]; then
+    die "BAD_ARGS" "order[$idx] missing symbol/side/type/quantity" \
+        "Each batch order requires symbol, side, type, quantity"
+  fi
+
+  # validate_order rounds qty/price; aborts on minQty / minNotional fails.
+  # When it dies, its err_json comes out as $_vres. Re-emit a single
+  # batch-aware error so callers get one clean JSON with the index.
+  local _vres
+  if ! _vres=$(validate_order "$sym" "$qty" "$price"); then
+    local inner_code inner_msg
+    inner_code=$(echo "$_vres" | jq -r '.error.code    // "INVALID_ORDER"' 2>/dev/null || echo INVALID_ORDER)
+    inner_msg=$( echo "$_vres" | jq -r '.error.message // ""'              2>/dev/null || echo "")
+    die "$inner_code" "order[$idx] $inner_msg" "Per-order validation failed"
+  fi
+  read -r qty price <<<"$_vres"
+  [ -z "$coid" ] && coid=$(gen_client_order_id)
+
+  # Reference price for notional accounting: limit price if set, else mark.
+  local ref="$price"
+  if [ "$ref" = "0" ]; then
+    ref=$(public_get /fapi/v1/premiumIndex "symbol=$sym" | jq -r .markPrice)
+  fi
+  local notional
+  notional=$(python3 -c \
+    "import sys,decimal as d;print(d.Decimal(sys.argv[1])*d.Decimal(sys.argv[2]))" \
+    "$qty" "$ref")
+
+  jq -nc \
+    --arg sym "$sym" --arg side "$side" --arg type "$type" \
+    --arg qty "$qty" --arg price "$price" --arg tif "$tif" \
+    --arg coid "$coid" --arg pside "$pside" \
+    --arg ro "$ro" --arg cp "$cp" --arg wt "$wt" \
+    --arg sp "$sp" --arg cb "$cb" --arg n "$notional" \
+    '{order: ({symbol:$sym, side:$side, type:$type, quantity:$qty, newClientOrderId:$coid}
+              + (if $type=="LIMIT" then {timeInForce:$tif, price:$price} else {} end)
+              + (if $pside!="BOTH"  then {positionSide:$pside} else {} end)
+              + (if $ro=="true"     then {reduceOnly:"true"} else {} end)
+              + (if $cp=="true"     then {closePosition:"true"} else {} end)
+              + (if $wt!=""         then {workingType:$wt} else {} end)
+              + (if $sp!=""         then {stopPrice:$sp} else {} end)
+              + (if $cb!=""         then {callbackRate:$cb} else {} end)),
+      notional:$n}'
+}
+
+_order_place_batch() {
+  local orders_file="" orders_inline="" dry_run=0
+  # ARG_CONFIRM is read by require_confirmation in _common.sh.
+  # shellcheck disable=SC2034
+  ARG_CONFIRM=0
+  while [ $# -gt 0 ]; do case "$1" in
+    --orders-file)     orders_file="$2"; shift 2;;
+    --orders)          orders_inline="$2"; shift 2;;
+    --dry-run)         dry_run=1; shift;;
+    --confirm)         ARG_CONFIRM=1; shift;;
+    --mainnet|--testnet) shift;;
+    *) shift;;
+  esac; done
+
+  local raw=""
+  if [ -n "$orders_file" ]; then
+    [ -f "$orders_file" ] || die "BAD_ARGS" "orders file not found: $orders_file" ""
+    raw=$(cat "$orders_file")
+  elif [ -n "$orders_inline" ]; then
+    raw="$orders_inline"
+  else
+    die "BAD_ARGS" "--orders-file or --orders required" \
+        "Pass JSON array of orders (max 5)"
+  fi
+
+  echo "$raw" | jq -e 'type=="array"' >/dev/null \
+    || die "BAD_ARGS" "orders payload is not a JSON array" "Expected [{...}, ...]"
+  local count
+  count=$(echo "$raw" | jq 'length')
+  if [ "$count" -lt 1 ] || [ "$count" -gt 5 ]; then
+    die "BATCH_SIZE" "batch must contain 1..5 orders, got $count" \
+        "Split into smaller batches"
+  fi
+
+  # Per-order: validate + normalize + accumulate notional. We don't rely on
+  # `set -e` propagating from command substitutions (bats' `run` and other
+  # callers disable errexit), so check exit status explicitly.
+  local normalized="[]" total_notional="0"
+  local i o pair _rc obj per_notional
+  for ((i=0; i<count; i++)); do
+    o=$(echo "$raw" | jq -c ".[$i]")
+    pair=$(_batch_normalize_one "$i" "$o"); _rc=$?
+    if [ $_rc -ne 0 ]; then
+      # `pair` carries the err_json produced by die() inside the helper.
+      printf '%s\n' "$pair"
+      return $_rc
+    fi
+    obj=$(echo "$pair" | jq -c '.order')
+    per_notional=$(echo "$pair" | jq -r '.notional')
+    total_notional=$(python3 -c \
+      "import sys,decimal as d;print(d.Decimal(sys.argv[1])+d.Decimal(sys.argv[2]))" \
+      "$total_notional" "$per_notional")
+    normalized=$(jq -nc --argjson a "$normalized" --argjson o "$obj" '$a + [$o]')
+  done
+
+  # Mainnet confirmation gate runs over aggregate notional. Per-symbol
+  # leverage isn't queried (would multiply weight); use 1 as floor.
+  require_confirmation "$total_notional" "1"
+
+  # URL-encode the JSON array for the batchOrders query parameter.
+  local encoded
+  encoded=$(python3 -c "import sys,urllib.parse;print(urllib.parse.quote(sys.stdin.read(),safe=''))" <<<"$normalized")
+  local q="batchOrders=$encoded"
+
+  if [ "$dry_run" -eq 1 ]; then
+    jq -nc --arg v "$FUTURES_VENUE" --arg n "$FUTURES_NETWORK" \
+          --arg c "$CMD" --arg tn "$total_notional" \
+          --argjson o "$normalized" \
+          '{ok:true,venue:$v,network:$n,command:$c,
+            data:{would_send:$o,count:($o|length),estimated_notional:$tn,dry_run:true},
+            warnings:[],error:null}'
+    return 0
+  fi
+  signed_req POST /fapi/v1/batchOrders "$q" | normalize_error \
+    | { read -r d; ok_json "$CMD" "$d"; }
+}
+
+_order_cancel_batch() {
+  local sym="" oids="" coids=""
+  # ARG_CONFIRM is read by require_confirmation in _common.sh.
+  # shellcheck disable=SC2034
+  ARG_CONFIRM=0
+  while [ $# -gt 0 ]; do case "$1" in
+    --symbol)             sym="$2"; shift 2;;
+    --order-ids)          oids="$2"; shift 2;;
+    --client-order-ids)   coids="$2"; shift 2;;
+    --confirm)            ARG_CONFIRM=1; shift;;
+    --mainnet|--testnet)  shift;;
+    *) shift;;
+  esac; done
+  [ -z "$sym" ] && die "BAD_ARGS" "--symbol required" ""
+  if [ -z "$oids" ] && [ -z "$coids" ]; then
+    die "BAD_ARGS" "--order-ids or --client-order-ids required" \
+        "Comma-separated list, e.g. --order-ids 12345,67890"
+  fi
+
+  # Cancels are defensive: we still pass through the gate so mainnet users
+  # get the same env/flag protection, but use notional 0 so it never blocks
+  # on FUTURES_MAX_NOTIONAL.
+  require_confirmation "0" "1"
+
+  local q="symbol=$sym"
+  local list enc
+  if [ -n "$oids" ]; then
+    list=$(echo "$oids" | jq -Rc 'split(",")|map(select(length>0)|tonumber)' 2>/dev/null) \
+      || die "BAD_ARGS" "--order-ids must be comma-separated integers" \
+             "Got: $oids"
+    enc=$(python3 -c "import sys,urllib.parse;print(urllib.parse.quote(sys.stdin.read(),safe=''))" <<<"$list")
+    q="$q&orderIdList=$enc"
+  fi
+  if [ -n "$coids" ]; then
+    list=$(echo "$coids" | jq -Rc 'split(",")|map(select(length>0))')
+    enc=$(python3 -c "import sys,urllib.parse;print(urllib.parse.quote(sys.stdin.read(),safe=''))" <<<"$list")
+    q="$q&origClientOrderIdList=$enc"
+  fi
+
+  signed_req DELETE /fapi/v1/batchOrders "$q" | normalize_error \
+    | { read -r d; ok_json "$CMD" "$d"; }
 }

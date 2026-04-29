@@ -149,6 +149,75 @@ If any check fails the CLI returns:
 
 ---
 
+## `order place-batch` — up to 5 orders in one signed call
+
+```
+futures-cli order place-batch \
+  --orders-file path/to/orders.json \
+  [--orders '<inline JSON array>'] \
+  [--dry-run] \
+  [--mainnet] \
+  [--confirm]
+```
+
+The JSON payload is an array (1..5 elements) of order objects following
+Binance's `POST /fapi/v1/batchOrders` schema:
+
+```json
+[
+  {"symbol":"BTCUSDT","side":"BUY", "type":"LIMIT","quantity":"0.002","price":"60000","timeInForce":"GTC"},
+  {"symbol":"ETHUSDT","side":"SELL","type":"STOP_MARKET","quantity":"0.10","stopPrice":"3500","reduceOnly":"true"}
+]
+```
+
+Each order is run through the same Layer-2 validations as `order place`
+(stepSize / tickSize rounding, minQty, minNotional). Per-order
+`newClientOrderId` is auto-generated when omitted (see Idempotency above).
+The aggregate `qty × price` across the batch is fed into the mainnet
+confirmation gate (`FUTURES_MAX_NOTIONAL`).
+
+`--dry-run` returns the normalized batch and the estimated total notional
+without contacting the venue:
+
+```json
+{
+  "ok": true, "venue": "binance", "network": "testnet",
+  "command": "order place-batch",
+  "data": {
+    "would_send": [ { "symbol": "BTCUSDT", "...": "..." } ],
+    "count": 1,
+    "estimated_notional": "120.000",
+    "dry_run": true
+  },
+  "warnings": [], "error": null
+}
+```
+
+A live response wraps the venue array (one element per order; each is
+either a fill response or a per-order error) in the same `data` field
+described under "Output schema".
+
+---
+
+## `order cancel-batch` — cancel up to 10 orders by id
+
+```
+futures-cli order cancel-batch \
+  --symbol BTCUSDT \
+  [--order-ids "12345,67890"] \
+  [--client-order-ids "ai-1,ai-2"] \
+  [--mainnet] [--confirm]
+```
+
+Exactly one of `--order-ids` (numeric) or `--client-order-ids` (strings)
+must be provided. The CLI builds Binance's `orderIdList` /
+`origClientOrderIdList` JSON arrays, URL-encodes them, and signs the
+request. Cancels are non-destructive in the risk model so they pass the
+mainnet gate with zero notional, but `--confirm` + `FUTURES_CONFIRM=yes`
+are still required on mainnet.
+
+---
+
 ## `order bracket` — atomic entry + SL + TP
 
 ```
@@ -176,6 +245,9 @@ FUTURES_API_KEY        # required
 FUTURES_API_SECRET     # required
 FUTURES_VENUE          # binance|bybit|okx, default binance
 FUTURES_NETWORK        # testnet|mainnet, default testnet
+FUTURES_BASE_URL       # optional, overrides the resolved BASE_URL for every
+                       # request (e.g. https://testnet.binancefuture.com when
+                       # demo-fapi.binance.com is geo-blocked from your runner)
 ```
 
 Signing follows Binance HMAC-SHA256 over the query string with `timestamp`
@@ -205,12 +277,15 @@ Common error codes (normalized across venues):
 - `INSUFFICIENT_MARGIN`
 - `INVALID_QUANTITY` (below stepSize / minNotional)
 - `INVALID_PRICE` (off tickSize)
+- `MIN_NOTIONAL` (qty × price below filter)
 - `LEVERAGE_TOO_HIGH`
 - `POSITION_SIDE_MISMATCH` (hedge mode misuse)
 - `REDUCE_ONLY_REJECT`
 - `CONFIRMATION_REQUIRED`
 - `RATE_LIMIT` (with `retry_after_ms`)
 - `CIRCUIT_BREAKER` (drawdown / daily-loss limit hit)
+- `BATCH_SIZE` (`order place-batch` outside 1..5)
+- `INVALID_ORDER` (per-order failure inside a batch; message includes index)
 
 ---
 

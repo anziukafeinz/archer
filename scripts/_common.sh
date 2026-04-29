@@ -11,11 +11,20 @@ set -euo pipefail
 # Binance retired the old testnet.binancefuture.com domain in favour of the
 # unified "Demo Mode" surface. Generate keys at https://demo.binance.com
 # (My Settings -> API Management) and trade against demo-fapi.binance.com.
-case "$FUTURES_VENUE:$FUTURES_NETWORK" in
-  binance:testnet|binance:demo) BASE_URL="https://demo-fapi.binance.com" ;;
-  binance:mainnet)               BASE_URL="https://fapi.binance.com" ;;
-  *) echo "unsupported venue/network: $FUTURES_VENUE/$FUTURES_NETWORK" >&2; exit 2 ;;
-esac
+#
+# Some networks / regions still get geo-blocked on demo-fapi while the
+# legacy testnet host stays reachable. `FUTURES_BASE_URL`, when set,
+# overrides the resolved BASE_URL for every request — useful for sandboxed
+# CI runners and the legacy `https://testnet.binancefuture.com` host.
+if [ -n "${FUTURES_BASE_URL:-}" ]; then
+  BASE_URL="$FUTURES_BASE_URL"
+else
+  case "$FUTURES_VENUE:$FUTURES_NETWORK" in
+    binance:testnet|binance:demo) BASE_URL="https://demo-fapi.binance.com" ;;
+    binance:mainnet)               BASE_URL="https://fapi.binance.com" ;;
+    *) echo "unsupported venue/network: $FUTURES_VENUE/$FUTURES_NETWORK" >&2; exit 2 ;;
+  esac
+fi
 
 # --- output helpers -----------------------------------------------------------
 

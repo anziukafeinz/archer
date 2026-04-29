@@ -1,0 +1,44 @@
+{
+  "timezone": "UTC",
+  "serverTime": 1700000000000,
+  "rateLimits": [],
+  "exchangeFilters": [],
+  "symbols": [
+    {
+      "symbol": "BTCUSDT",
+      "status": "TRADING",
+      "contractType": "PERPETUAL",
+      "baseAsset": "BTC",
+      "quoteAsset": "USDT",
+      "filters": [
+        {"filterType": "PRICE_FILTER", "tickSize": "0.10", "minPrice": "0.10", "maxPrice": "1000000"},
+        {"filterType": "LOT_SIZE",     "stepSize": "0.001", "minQty": "0.001", "maxQty": "1000"},
+        {"filterType": "MIN_NOTIONAL", "notional": "5"}
+      ]
+    },
+    {
+      "symbol": "ETHUSDT",
+      "status": "TRADING",
+      "contractType": "PERPETUAL",
+      "baseAsset": "ETH",
+      "quoteAsset": "USDT",
+      "filters": [
+        {"filterType": "PRICE_FILTER", "tickSize": "0.01", "minPrice": "0.01", "maxPrice": "100000"},
+        {"filterType": "LOT_SIZE",     "stepSize": "0.001", "minQty": "0.001", "maxQty": "10000"},
+        {"filterType": "MIN_NOTIONAL", "notional": "5"}
+      ]
+    },
+    {
+      "symbol": "DOGEUSDT",
+      "status": "TRADING",
+      "contractType": "PERPETUAL",
+      "baseAsset": "DOGE",
+      "quoteAsset": "USDT",
+      "filters": [
+        {"filterType": "PRICE_FILTER", "tickSize": "0.00001", "minPrice": "0.00001", "maxPrice": "1000"},
+        {"filterType": "LOT_SIZE",     "stepSize": "1",       "minQty": "1",         "maxQty": "10000000"},
+        {"filterType": "MIN_NOTIONAL", "notional": "5"}
+      ]
+    }
+  ]
+}
