@@ -38,6 +38,12 @@ source_common_and_order() {
   source "$SCRIPTS_DIR/order.sh"
 }
 
+source_common_and_account() {
+  source_common
+  # shellcheck source=../scripts/account.sh
+  source "$SCRIPTS_DIR/account.sh"
+}
+
 # Stubs used by batch tests to avoid network. `signed_req` records its
 # arguments to $SIGNED_REQ_LOG and emits a canned JSON success response.
 mock_signed_req() {

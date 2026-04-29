@@ -66,10 +66,11 @@ Bybit and OKX. All commands return **JSON** so the agent can parse reliably.
 | `futures-cli account commission` | `GET /fapi/v1/commissionRate` | Maker/taker fee for symbol |
 | `futures-cli account income` | `GET /fapi/v1/income` | Realized PnL, funding fees, commissions |
 | `futures-cli position list` | `GET /fapi/v3/positionRisk` | Open positions w/ liq price & ADL quantile |
-| `futures-cli position set-leverage` | `POST /fapi/v1/leverage` | Set leverage for symbol |
-| `futures-cli position set-margin-type` | `POST /fapi/v1/marginType` | ISOLATED / CROSSED |
-| `futures-cli position set-position-mode` | `POST /fapi/v1/positionSide/dual` | One-way / Hedge |
-| `futures-cli position adjust-margin` | `POST /fapi/v1/positionMargin` | Add/remove isolated margin |
+| `futures-cli position set-leverage` | `POST /fapi/v1/leverage` | Set leverage for symbol (1..125, gated) |
+| `futures-cli position set-margin-type` | `POST /fapi/v1/marginType` | `ISOLATED` / `CROSSED` (gated) |
+| `futures-cli position set-position-mode` | `POST /fapi/v1/positionSide/dual` | `--mode hedge\|one-way` (gated) |
+| `futures-cli position get-position-mode` | `GET /fapi/v1/positionSide/dual` | Read current mode (read-only) |
+| `futures-cli position adjust-margin` | `POST /fapi/v1/positionMargin` | Add/remove ISOLATED margin (gated) |
 
 ### Order Management (auth required, **destructive**)
 
@@ -249,6 +250,55 @@ Implementation: places entry as `LIMIT`, then on fill (or immediately if
 already filled) places `STOP_MARKET` (SL) and `TAKE_PROFIT_MARKET` (TP) both
 with `closePosition=true` and `workingType=MARK_PRICE`. Returns all three
 order IDs grouped by a synthetic `bracketId`.
+
+---
+
+## `position` setters — leverage, margin type, position mode
+
+All three setters share the same JSON envelope as `order place` and respect
+the mainnet confirmation gate (`--confirm` + `FUTURES_CONFIRM=yes`). On
+`testnet` the gate is a no-op so dry-runs and live calls work without
+ceremony. Each setter supports `--dry-run` to preview the request without
+sending it.
+
+```
+# Per-symbol leverage. Integer 1..125 (Binance hard cap). Mainnet additionally
+# enforces FUTURES_MAX_LEVERAGE.
+futures-cli position set-leverage --symbol BTCUSDT --leverage 5 [--dry-run] [--confirm]
+
+# Per-symbol margin type. ISOLATED isolates margin per position; CROSSED uses
+# the wallet balance as cross-margin. Binance rejects with -4046 if the new
+# value matches the current one (see Output schema → INVALID_ARGUMENT).
+futures-cli position set-margin-type --symbol BTCUSDT --margin-type ISOLATED [--dry-run] [--confirm]
+
+# Account-wide position mode (NOT per-symbol). hedge = independent LONG/SHORT
+# positions; one-way = a single net position per symbol. Cannot switch while
+# any position or open order exists (Binance rejects with -4059).
+futures-cli position set-position-mode --mode hedge|one-way [--dry-run] [--confirm]
+
+# Read-only sibling — verify the current mode after setting it.
+futures-cli position get-position-mode
+
+# ISOLATED-only: add or reduce per-position collateral. The --amount value
+# is fed into the confirmation gate as a notional upper bound.
+futures-cli position adjust-margin \
+  --symbol BTCUSDT --amount 50 --type 1 \
+  [--position-side LONG|SHORT|BOTH]   # default BOTH (one-way mode)
+```
+
+Validation (runs before any signed call):
+- `--leverage` must be an integer in `1..125`. Non-integers and out-of-range
+  values fail with `BAD_ARGS` and the message `--leverage <v> out of range`.
+- `--margin-type` is normalised to upper-case; only `ISOLATED` and `CROSSED`
+  are accepted.
+- `--mode` accepts `hedge` or `one-way` (case-insensitive). Legacy
+  `--dual true|false` is still accepted for backward-compatibility.
+- `--amount` (adjust-margin) must be a positive decimal; `--type` must be
+  `1` (add) or `2` (reduce).
+
+The `set-leverage` mainnet gate uses the requested leverage for the
+`FUTURES_MAX_LEVERAGE` check, so a strategy that hard-caps at `5x` will
+block a `set-leverage 10` request even with `--confirm`.
 
 ---
 
