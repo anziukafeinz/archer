@@ -87,16 +87,16 @@ Bybit and OKX. All commands return **JSON** so the agent can parse reliably.
 | `futures-cli order history` | `GET /fapi/v1/allOrders` | Full history |
 | `futures-cli order trades` | `GET /fapi/v1/userTrades` | Fills |
 
-### Strategy Helpers (offline, no API call)
+### Strategy Helpers
 
-| Command | Description |
-|---|---|
-| `futures-cli calc size` | Risk-based position sizing (`equity × risk% / (entry − stop)`) |
-| `futures-cli calc liq` | Estimate liquidation price for hypothetical position |
-| `futures-cli calc pnl` | What-if PnL given entry/exit/qty/leverage |
-| `futures-cli calc basis` | Spot vs futures basis & implied APR |
-| `futures-cli scan funding` | Rank symbols by current funding rate |
-| `futures-cli ta` | SMA / EMA / RSI / ATR / Bollinger from klines |
+| Command | Description | Auth |
+|---|---|---|
+| `futures-cli calc size` | Risk-based position sizing (`equity × risk% / |entry − stop|`) | offline |
+| `futures-cli calc liq` | Estimate liquidation price (isolated-margin approximation) | offline |
+| `futures-cli calc pnl` | What-if PnL + ROI on margin given `--leverage` | offline |
+| `futures-cli calc basis` | Futures vs spot/index basis (bps) and annualized APR | public |
+| `futures-cli scan funding` | Rank symbols by current funding rate (top-N pos / neg) | public |
+| `futures-cli ta sma\|ema\|rsi\|atr\|bbands` | Indicators from `/fapi/v1/klines` | public |
 
 ---
 
@@ -299,6 +299,91 @@ Validation (runs before any signed call):
 The `set-leverage` mainnet gate uses the requested leverage for the
 `FUTURES_MAX_LEVERAGE` check, so a strategy that hard-caps at `5x` will
 block a `set-leverage 10` request even with `--confirm`.
+
+---
+
+## `calc` — offline calculators
+
+`calc` subcommands are pure compute (Decimal-precision Python). They
+never call the venue and never need an API key.
+
+```
+# Risk-based position sizing.
+futures-cli calc size --equity 1000 --risk-pct 1 \
+                      --entry 60000 --stop 59000
+# => suggested_quantity = 0.01 (10 USDT risk / 1000 spread)
+
+# Liquidation estimate, isolated margin (ignores fees + funding + tier MMR).
+futures-cli calc liq --entry 60000 --quantity 0.01 \
+                     --leverage 5 --side LONG [--mmr 0.004]
+# => estimated_liq_price = 48240
+
+# What-if PnL. Optional --leverage adds ROI-on-margin.
+futures-cli calc pnl --side SHORT --entry 60000 --exit 59000 \
+                     --quantity 0.01 [--leverage 5]
+# => pnl_quote = 10.00, roi_on_margin = 8.33 (when leverage given)
+
+# Futures-vs-spot basis. Pass either --symbol (live fetch from
+# /fapi/v1/premiumIndex) OR both --futures-price and --spot-price.
+# --hours is the funding interval (8 for Binance perp).
+futures-cli calc basis --symbol BTCUSDT [--hours 8]
+futures-cli calc basis --futures-price 60100 --spot-price 60000 --hours 8
+# => basis_pct, basis_annualized_pct
+```
+
+Validation: every subcommand fails with `BAD_ARGS` and a clear hint when
+arguments are missing, non-numeric, out of range, or self-contradictory
+(e.g. `entry == stop`, `equity <= 0`, `risk-pct > 100`).
+
+## `scan funding` — rank perp funding rates
+
+```
+futures-cli scan funding [--top 10]
+```
+
+Fetches `/fapi/v1/premiumIndex` (no auth) and returns:
+
+```
+{ "data": {
+    "count":         <total symbols seen>,
+    "top_negative":  [<top-N most-negative funding>],
+    "top_positive":  [<top-N most-positive funding>] } }
+```
+
+Each entry has `{symbol, markPrice, lastFundingRate, nextFundingTime}`.
+Negative funding = shorts pay longs (carry trade for long side); positive
+= longs pay shorts. The CLI sorts numerically by `lastFundingRate`, so
+`top_positive[0]` is the highest-paying short carry.
+
+## `ta` — SMA / EMA / RSI / ATR / Bollinger Bands
+
+```
+futures-cli ta sma    --symbol BTCUSDT --interval 1h --period 20
+futures-cli ta ema    --symbol BTCUSDT --interval 4h --period 50
+futures-cli ta rsi    --symbol BTCUSDT --interval 1h --period 14
+futures-cli ta atr    --symbol BTCUSDT --interval 1h --period 14
+futures-cli ta bbands --symbol BTCUSDT --interval 1h --period 20
+```
+
+All indicators pull `/fapi/v1/klines?limit=500` (public, no auth) and
+compute the indicator on the close series (or high/low/close for ATR).
+`--length` is accepted as an alias for `--period`. The output is the
+**most recent** indicator value, plus the candle count and last close
+for sanity checking:
+
+```
+{ "data": {
+    "indicator":   "rsi",
+    "symbol":      "BTCUSDT",
+    "interval":    "1h",
+    "length":      14,
+    "candles":     500,
+    "last_close":  77320,
+    "value":       55.81 } }
+```
+
+`bbands` returns `{middle, upper, lower, stddev}` under `data.bbands`
+(±2σ).
 
 ---
 

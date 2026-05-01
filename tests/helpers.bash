@@ -44,6 +44,25 @@ source_common_and_account() {
   source "$SCRIPTS_DIR/account.sh"
 }
 
+source_common_and_calc() {
+  source_common
+  # shellcheck source=../scripts/calc.sh
+  source "$SCRIPTS_DIR/calc.sh"
+}
+
+# Mock public_get from a fixture file. Useful for `scan funding`,
+# `ta sma|ema|...`, and `calc basis --symbol`. Pass either the full
+# path or just the basename (resolved against $FIXTURES_DIR).
+mock_public_get_fixture() {
+  local fx="$1"
+  [ -f "$fx" ] || fx="$FIXTURES_DIR/$fx"
+  export _MOCK_PUBLIC_GET_FIXTURE="$fx"
+  public_get() {
+    cat "$_MOCK_PUBLIC_GET_FIXTURE"
+  }
+  export -f public_get
+}
+
 # Stubs used by batch tests to avoid network. `signed_req` records its
 # arguments to $SIGNED_REQ_LOG and emits a canned JSON success response.
 mock_signed_req() {

@@ -24,8 +24,6 @@ jobs:
       - name: install
         run: sudo apt-get update -y && sudo apt-get install -y shellcheck
       - name: lint
-        # calc.sh has a known pre-existing SC2261 issue tracked separately;
-        # it is excluded until that cleanup lands. The other layers must
-        # stay clean. Severity=error gates only real bugs (style warnings
-        # in legacy parsing code are filed for follow-up).
+        # M8 fixed the SC2261 in calc.sh, so the full active surface is
+        # now part of the lint gate. Severity=error catches real bugs.
         run: make lint
