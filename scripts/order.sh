@@ -21,9 +21,12 @@ order_dispatch() {
 }
 
 _order_place() {
-  local sym="" side="" type="" qty="" price="0" tif="" sl="" tp="" cb="" pside="BOTH"
+  local sym="" side="" type="" qty="" price="0" tif="" sl="" act="" cb="" pside="BOTH"
   local reduce_only="" close_position="" working="" price_protect=""
-  local coid=""; local dry_run=0; ARG_CONFIRM=0
+  local coid=""; local dry_run=0
+  # ARG_CONFIRM is read by require_confirmation in _common.sh.
+  # shellcheck disable=SC2034
+  ARG_CONFIRM=0
   local max_slip="${FUTURES_MAX_SLIPPAGE:-0.005}"
   while [ $# -gt 0 ]; do case "$1" in
     --symbol)         sym="$2"; shift 2;;
@@ -33,7 +36,7 @@ _order_place() {
     --price)          price="$2"; shift 2;;
     --time-in-force)  tif="$2"; shift 2;;
     --stop-price)     sl="$2"; shift 2;;
-    --activation-price) tp="$2"; shift 2;;
+    --activation-price) act="$2"; shift 2;;
     --callback-rate)  cb="$2"; shift 2;;
     --position-side)  pside="$2"; shift 2;;
     --reduce-only)    reduce_only="true"; shift;;
@@ -47,32 +50,137 @@ _order_place() {
     --mainnet|--testnet) shift;;   # already resolved at startup
     *) shift;;
   esac; done
-  [ -z "$sym" ] || [ -z "$side" ] || [ -z "$type" ] || [ -z "$qty" ] \
-    && die "BAD_ARGS" "--symbol --side --type --quantity required" ""
+  if [ -z "$sym" ] || [ -z "$side" ] || [ -z "$type" ] || [ -z "$qty" ]; then
+    die "BAD_ARGS" "--symbol --side --type --quantity required" ""
+  fi
 
-  # Validate / round qty + price against exchange filters.
-  read -r qty price <<< "$(validate_order "$sym" "$qty" "$price")"
+  # ---- per-type required-arg validation ----------------------------------
+  case "$type" in
+    LIMIT)
+      [ "$price" = "0" ] && die "BAD_ARGS" "LIMIT requires --price" ""
+      ;;
+    MARKET)
+      # MARKET: no price / timeInForce. Force price=0 so validate_order skips
+      # the minNotional check (Binance enforces it server-side via mark).
+      price="0"
+      ;;
+    STOP|TAKE_PROFIT)
+      # Stop-limit variants: need both --price (limit) and --stop-price (trigger).
+      [ -z "$sl" ]       && die "BAD_ARGS" "$type requires --stop-price" ""
+      [ "$price" = "0" ] && die "BAD_ARGS" "$type requires --price" ""
+      ;;
+    STOP_MARKET|TAKE_PROFIT_MARKET)
+      [ -z "$sl" ] && die "BAD_ARGS" "$type requires --stop-price" ""
+      price="0"
+      ;;
+    TRAILING_STOP_MARKET)
+      [ -z "$cb" ] && die "BAD_ARGS" \
+        "TRAILING_STOP_MARKET requires --callback-rate" \
+        "Pass percentage (0.1..5.0); e.g. --callback-rate 1.0"
+      python3 -c "
+import sys, decimal as d
+cb = d.Decimal(sys.argv[1])
+sys.exit(0 if d.Decimal('0.1') <= cb <= d.Decimal('5.0') else 1)" "$cb" \
+        || die "BAD_ARGS" "callbackRate $cb out of range" \
+               "Binance accepts 0.1..5.0 (% trailing offset)"
+      price="0"
+      ;;
+    *)
+      die "BAD_ARGS" "unsupported --type $type" \
+          "Use one of: LIMIT MARKET STOP STOP_MARKET TAKE_PROFIT TAKE_PROFIT_MARKET TRAILING_STOP_MARKET"
+      ;;
+  esac
 
-  # Estimate notional for confirmation gate. For MARKET we use mark price.
+  # ---- closePosition / reduceOnly mutual constraints ---------------------
+  if [ -n "$close_position" ]; then
+    case "$type" in
+      STOP_MARKET|TAKE_PROFIT_MARKET) ;;
+      *) die "BAD_ARGS" "--close-position only valid on STOP_MARKET / TAKE_PROFIT_MARKET" \
+             "Use --reduce-only on other types" ;;
+    esac
+    [ -n "$reduce_only" ] \
+      && die "BAD_ARGS" "--reduce-only and --close-position are mutually exclusive" \
+             "closePosition already implies a reducing exit"
+  fi
+
+  # ---- qty / price filter rounding ---------------------------------------
+  # closePosition orders ignore quantity server-side; we still round qty to
+  # stepSize but skip the minQty / minNotional gates (Binance won't enforce
+  # them when closePosition=true). For all other types validate_order runs.
+  if [ -n "$close_position" ]; then
+    local _filt; _filt=$(symbol_filters "$sym")
+    [ -z "$_filt" ] && die "INVALID_SYMBOL" "symbol $sym not found" \
+      "Run: futures-cli market exchange-info"
+    local _step; _step=$(echo "$_filt" | jq -r .stepSize)
+    qty=$(round_down "$qty" "$_step")
+  else
+    read -r qty price <<<"$(validate_order "$sym" "$qty" "$price")"
+  fi
+
+  # Always round stopPrice to tickSize when present.
+  if [ -n "$sl" ]; then
+    local _tick; _tick=$(symbol_filters "$sym" | jq -r .tickSize)
+    sl=$(round_down "$sl" "$_tick")
+  fi
+  if [ -n "$act" ]; then
+    local _tick2; _tick2=$(symbol_filters "$sym" | jq -r .tickSize)
+    act=$(round_down "$act" "$_tick2")
+  fi
+
+  # ---- slippage gate (price-bearing types only) --------------------------
+  # Catches typos like a BUY LIMIT 1.5x mark or a STOP entry 50% off mark.
+  # Bypassed entirely when --max-slippage 0 (effectively "off").
+  if [ "$price" != "0" ]; then
+    if python3 -c "import sys,decimal as d; sys.exit(0 if d.Decimal(sys.argv[1])>0 else 1)" "$max_slip"; then
+      local _mark
+      _mark=$(public_get /fapi/v1/premiumIndex "symbol=$sym" | jq -r .markPrice)
+      if ! python3 -c "
+import sys, decimal as d
+p, m, s = d.Decimal(sys.argv[1]), d.Decimal(sys.argv[2]), d.Decimal(sys.argv[3])
+sys.exit(0 if abs(p - m) / m <= s else 1)" "$price" "$_mark" "$max_slip"; then
+        die "SLIPPAGE_EXCEEDED" \
+            "limit price $price deviates from mark $_mark by more than $max_slip" \
+            "Move price closer to mark or raise --max-slippage / FUTURES_MAX_SLIPPAGE"
+      fi
+    fi
+  fi
+
+  # ---- confirmation gate (notional × leverage) ---------------------------
   local ref_price="$price"
   if [ "$ref_price" = "0" ]; then
     ref_price=$(public_get /fapi/v1/premiumIndex "symbol=$sym" | jq -r .markPrice)
   fi
-  local notional; notional=$(python3 -c "import sys,decimal;print(decimal.Decimal(sys.argv[1])*decimal.Decimal(sys.argv[2]))" "$qty" "$ref_price")
+  local notional
+  notional=$(python3 -c "import sys,decimal;print(decimal.Decimal(sys.argv[1])*decimal.Decimal(sys.argv[2]))" "$qty" "$ref_price")
+  # closePosition orders: Binance ignores quantity, so the notional we just
+  # computed is meaningless. Pass 0 to require_confirmation so it doesn't
+  # trip the FUTURES_MAX_NOTIONAL ceiling on what is really an exit-only
+  # request. The confirm flag + env are still required on mainnet.
+  [ -n "$close_position" ] && notional="0"
 
-  # Pull current leverage for the gate (best-effort; may be 0 if no position yet).
   local lev=1
   lev=$(signed_req GET /fapi/v3/positionRisk "symbol=$sym" 2>/dev/null \
-        | jq -r --arg s "$sym" '[.[]|select(.symbol==$s)|.leverage|tonumber][0] // 1' || echo 1)
+        | jq -r --arg s "$sym" '[.[]|select(.symbol==$s)|.leverage|tonumber][0] // 1' \
+        || echo 1)
   require_confirmation "$notional" "$lev"
 
   [ -z "$coid" ] && coid=$(gen_client_order_id)
 
-  # Build query
-  local q="symbol=$sym&side=$side&type=$type&quantity=$qty&newClientOrderId=$coid"
-  [ "$type" = "LIMIT" ] && q="$q&timeInForce=${tif:-GTC}&price=$price"
-  [ -n "$sl" ]              && q="$q&stopPrice=$sl"
-  [ -n "$cb" ]              && q="$q&callbackRate=$cb"
+  # ---- build query (type-specific shape) ---------------------------------
+  local q="symbol=$sym&side=$side&type=$type&newClientOrderId=$coid"
+  [ -z "$close_position" ] && q="$q&quantity=$qty"
+  case "$type" in
+    LIMIT)
+      q="$q&timeInForce=${tif:-GTC}&price=$price" ;;
+    STOP|TAKE_PROFIT)
+      q="$q&timeInForce=${tif:-GTC}&price=$price&stopPrice=$sl" ;;
+    STOP_MARKET|TAKE_PROFIT_MARKET)
+      q="$q&stopPrice=$sl" ;;
+    TRAILING_STOP_MARKET)
+      q="$q&callbackRate=$cb"
+      [ -n "$act" ] && q="$q&activationPrice=$act" ;;
+    MARKET) ;;
+  esac
   [ "$pside" != "BOTH" ]    && q="$q&positionSide=$pside"
   [ -n "$reduce_only" ]     && q="$q&reduceOnly=true"
   [ -n "$close_position" ]  && q="$q&closePosition=true"
@@ -80,10 +188,12 @@ _order_place() {
   [ -n "$price_protect" ]   && q="$q&priceProtect=true"
 
   if [ "$dry_run" -eq 1 ]; then
-    jq -nc --arg c "$CMD" --arg q "$q" --arg coid "$coid" \
-          --arg n "$notional" --arg l "$lev" \
-          '{ok:true,command:$c,data:{would_send:$q,clientOrderId:$coid,
-            estimated_notional:$n,leverage:$l},dry_run:true}'
+    ok_json "$CMD" "$(jq -nc \
+      --arg q "$q" --arg coid "$coid" --arg type "$type" \
+      --arg n "$notional" --arg l "$lev" --arg slip "$max_slip" \
+      '{would_send:$q, clientOrderId:$coid, type:$type,
+        estimated_notional:$n, leverage:$l,
+        max_slippage:$slip, dry_run:true}')"
     return 0
   fi
   signed_req POST /fapi/v1/order "$q" | normalize_error \
