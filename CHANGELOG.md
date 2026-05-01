@@ -1,5 +1,57 @@
 # Changelog
 
+## [0.4.0] - unreleased
+
+### Added — Milestone 6: position setters (leverage / margin type / mode)
+- `futures-cli position set-leverage` is now a first-class subcommand
+  with strict pre-flight validation: `--leverage` must be an integer in
+  `1..125` (Binance's hard cap). The mainnet confirmation gate is
+  enforced (`--confirm` + `FUTURES_CONFIRM=yes`), and the requested
+  leverage value is fed into `FUTURES_MAX_LEVERAGE` so a strategy
+  hard-cap of `5x` will block a `set-leverage 10` even with
+  `--confirm`. Supports `--dry-run`.
+- `futures-cli position set-margin-type` — accepts `ISOLATED` or
+  `CROSSED` (case-insensitive; normalised to upper-case before
+  signing). Wrong values fail with `BAD_ARGS` and a clear hint listing
+  the two accepted values.
+- `futures-cli position set-position-mode` — friendly
+  `--mode hedge|one-way` flag (mapped to Binance's
+  `dualSidePosition true|false`). The legacy `--dual true|false`
+  remains accepted for backward-compatibility with the v0.1.0 draft.
+- `futures-cli position get-position-mode` — read-only sibling that
+  returns `{mode, dualSidePosition}` so callers can verify the
+  current mode after a setter, or before issuing hedge-mode-only
+  parameters like `positionSide=LONG`.
+- `futures-cli position adjust-margin` was upgraded with proper
+  validation (`--type` ∈ `{1,2}`, `--amount > 0`) and now passes
+  `--amount` as the notional upper bound to the confirmation gate so
+  `FUTURES_MAX_NOTIONAL` can prevent accidentally pumping six figures
+  of collateral into a stuck position.
+- All five setters now accept `--dry-run` and emit the standard
+  `ok_json` envelope (`{ok, venue, network, command, data, warnings,
+  error}`), with subcommand-specific keys inside `data` (e.g.
+  `{symbol, leverage, dry_run:true, would_send}`).
+
+### Tests
+- `tests/test_position_setters.bats` — 26 hermetic unit tests
+  covering: every setter's happy path, every per-setter rejection
+  path (missing args, out-of-range leverage, bad enum, bad mode,
+  zero amount, etc.), the mainnet gate matrix (testnet bypass /
+  no `--confirm` / over `FUTURES_MAX_LEVERAGE` / over
+  `FUTURES_MAX_NOTIONAL` / within all limits), and `get-position-mode`
+  success + venue-error normalisation paths.
+- `tests/helpers.bash` gains a `source_common_and_account` helper that
+  pairs `_common.sh` with `account.sh` (the file that hosts both the
+  `account` and `position` dispatchers).
+
+### Documentation
+- `SKILL.md` — new "`position` setters" section with full usage,
+  validation rules, mainnet-gate behaviour, and notes on Binance's
+  server-side rejections (`-4046` / `-4059`). Quick-reference table
+  updated with the new `get-position-mode` entry and gate annotations.
+- `scripts/futures-cli` — top-level help text updated to list
+  `get-position-mode` and re-flow the `position` row.
+
 ## [0.3.0] - unreleased
 
 ### Added — Milestone 5: full order-type matrix + slippage gate

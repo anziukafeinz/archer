@@ -17,8 +17,8 @@ Groups:
             funding-history | open-interest | open-interest-hist |
             top-long-short-ratio | liquidations
   account   info | balance | config | commission | income
-  position  list | set-leverage | set-margin-type | set-position-mode |
-            adjust-margin
+  position  list | set-leverage | set-margin-type |
+            set-position-mode | get-position-mode | adjust-margin
   order     place | place-batch | bracket | cancel | cancel-all |
             cancel-batch | query | open | history | trades
   calc      size | liq | pnl | basis
